@@ -376,7 +376,12 @@ The test program verifies:
 
 **📸 Screenshot 1A:** Output of `./test_objects` showing all tests passing.
 
+<img width="937" height="223" alt="image" src="https://github.com/user-attachments/assets/7fdc98df-ec34-49f8-b131-3d6778867628" />
+
+
 **📸 Screenshot 1B:** `find .pes/objects -type f` showing the sharded directory structure.
+<img width="942" height="153" alt="image" src="https://github.com/user-attachments/assets/5f1b64e3-948a-41fb-8ea1-177f6543fc41" />
+
 
 ---
 
@@ -408,7 +413,11 @@ The test program verifies:
 
 **📸 Screenshot 2A:** Output of `./test_tree` showing all tests passing.
 
+<img width="940" height="240" alt="image" src="https://github.com/user-attachments/assets/b8148aa6-8b56-454b-8716-12671694db68" />
+
 **📸 Screenshot 2B:** Pick a tree object from `find .pes/objects -type f` and run `xxd .pes/objects/XX/YYY... | head -20` to show the raw binary format.
+<img width="940" height="148" alt="image" src="https://github.com/user-attachments/assets/1ddc65c1-e0f7-4114-b865-b0f66323a085" />
+
 
 ---
 
@@ -465,8 +474,10 @@ cat .pes/index    # Human-readable text format
 ```
 
 **📸 Screenshot 3A:** Run `./pes init`, `./pes add file1.txt file2.txt`, `./pes status` — show the output.
+<img width="737" height="510" alt="image" src="https://github.com/user-attachments/assets/22518bb6-56b7-42dc-a590-edae1db86a85" />
 
 **📸 Screenshot 3B:** `cat .pes/index` showing the text-format index with your entries.
+<img width="933" height="94" alt="image" src="https://github.com/user-attachments/assets/18539c9c-a8a3-4c52-8b51-37dfb30f22ff" />
 
 ---
 
@@ -516,10 +527,14 @@ make test-integration
 ```
 
 **📸 Screenshot 4A:** Output of `./pes log` showing three commits with hashes, authors, timestamps, and messages.
+<img width="766" height="421" alt="image" src="https://github.com/user-attachments/assets/53b69af9-03d8-4c22-8568-2024556a298b" />
 
 **📸 Screenshot 4B:** `find .pes -type f | sort` showing object store growth after three commits.
+<img width="938" height="381" alt="image" src="https://github.com/user-attachments/assets/7e4f0ff7-2a49-402a-a0c9-49b5077d784c" />
+
 
 **📸 Screenshot 4C:** `cat .pes/refs/heads/main` and `cat .pes/HEAD` showing the reference chain.
+<img width="936" height="159" alt="image" src="https://github.com/user-attachments/assets/1e42310f-4f8d-4033-9edd-4e20431cbefb" />
 
 ---
 
@@ -530,16 +545,41 @@ The following questions cover filesystem concepts beyond the implementation scop
 ### Branching and Checkout
 
 **Q5.1:** A branch in Git is just a file in `.git/refs/heads/` containing a commit hash. Creating a branch is creating a file. Given this, how would you implement `pes checkout <branch>` — what files need to change in `.pes/`, and what must happen to the working directory? What makes this operation complex?
+To checkout a branch:
+1.	Read the target branch file from .pes/refs/heads/<branch> to get its commit hash.
+2.	Update .pes/HEAD to ref: refs/heads/<branch>.
+3.	Read the commit object → get the tree hash → recursively read the tree.
+4.	Update the working directory files to match the tree snapshot.
+5.	Update the index to match the new tree.
+Complexity: The hard part is handling conflicts — if the user has uncommitted changes to files that differ between branches, checkout must refuse. You’d also need to handle file creation/deletion when switching between trees with different file sets.
+
 
 **Q5.2:** When switching branches, the working directory must be updated to match the target branch's tree. If the user has uncommitted changes to a tracked file, and that file differs between branches, checkout must refuse. Describe how you would detect this "dirty working directory" conflict using only the index and the object store.
+1.	For each entry in the index, stat() the working directory file.
+2.	Compare mtime and size from stat with the index entry’s stored values.
+3.	If metadata differs, re-hash the file contents and compare with the stored blob hash.
+4.	If the hash differs, the file has uncommitted changes → refuse checkout.
+5.	Also check for deleted files (stat fails) and new untracked files
+
 
 **Q5.3:** "Detached HEAD" means HEAD contains a commit hash directly instead of a branch reference. What happens if you make commits in this state? How could a user recover those commits?
+In detached HEAD, HEAD contains a commit hash directly (not ref: refs/heads/...). New commits still work — each new commit’s hash replaces the old hash in HEAD.
+However, if you then checkout a branch, the detached commits become “orphaned” — no branch points to them. They’re unreachable but still exist in the object store.
+To recover: Note the commit hash before switching, then create a branch pointing to it:
+git branch rescue-branch <hash>
+
 
 ### Garbage Collection and Space Reclamation
 
 **Q6.1:** Over time, the object store accumulates unreachable objects — blobs, trees, or commits that no branch points to (directly or transitively). Describe an algorithm to find and delete these objects. What data structure would you use to track "reachable" hashes efficiently? For a repository with 100,000 commits and 50 branches, estimate how many objects you'd need to visit.
+1.	Mark phase: Start from all branch tips (files in refs/heads/). For each reachable commit, mark it and follow: commit → tree → recursively mark all subtrees and blobs. Use a hash set to track reachable hashes.
+2.	Sweep phase: Walk all objects in .pes/objects/. Delete any object whose hash is NOT in the reachable set.
+3.	Estimation: For 100K commits with 50 branches, you’d visit ~100K commits + their trees. If each commit has ~100 files, that’s ~10M tree/blob references to check (but deduplication means far fewer unique objects).
+
 
 **Q6.2:** Why is it dangerous to run garbage collection concurrently with a commit operation? Describe a race condition where GC could delete an object that a concurrent commit is about to reference. How does Git's real GC avoid this?
+Race condition: A commit operation creates objects in stages — first blobs, then trees, then the commit object, then updates the ref. If GC runs between “write tree” and “update ref,” it could see the new tree as unreachable (no ref points to it yet) and delete it. When the commit operation tries to update the ref, it points to a deleted object.
+Git’s solution: Git uses a lock file (.git/gc.lock) and a grace period — GC only deletes objects older than 2 weeks by default (gc.pruneExpire). This ensures in-progress operations complete before their objects become eligible for deletion.
 
 ---
 
